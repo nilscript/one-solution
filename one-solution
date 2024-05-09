@@ -33,7 +33,8 @@ def read_arguments() -> Namespace:
     parser.add_argument("-u", "--username")
     parser.add_argument("-p", "--password")
     # TODO Verify that the configuration is read protected by authorized users only.
-    # TODO Add default config path for windows to.
+    # TODO --Add-default-config-path-for-windows-to.--
+    # TODO Just remove default argument instead.
     parser.add_argument("-c", "--config", default="/etc/one-solution/config.ini")
     parser.add_argument("--log", default="DEBUG")
 
@@ -138,6 +139,7 @@ def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
     log.info(f"Resolving last ip for {section.name}.")
 
     full_path = []
+    # TODO Add checks
     last_ip_folder = section["last_ip_folder"]
     last_ip_file = section["last_ip_file"]
 
