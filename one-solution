@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+
+from argparse import ArgumentParser, Namespace
+from configparser import ConfigParser, SectionProxy
+from functools import cache
+from html.parser import HTMLParser
+import json
+import logging as log
+from pathlib import PurePath
+from requests import RequestException, Request, Session
+from subprocess import run
+import xml.etree.ElementTree as ET
+
+
+def read_arguments() -> Namespace:
+    parser = ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "-d",
+        "--domain",
+        nargs=1,
+        type=str,
+        help="The domain to operate on."
+        + " If set ignore all other sections in the config file except for default.",
+    )
+    parser.add_argument(
+        "-s", "--subdomains", help="Example: --subdomains=mydomain1.com,mydomain2.com"
+    )
+    parser.add_argument("-i", "--ip")
+    parser.add_argument("-r", "--ip-resolver")
+    parser.add_argument("-l", "--last-ip-file")
+    parser.add_argument("-f", "--last-ip-folder")
+    parser.add_argument("-u", "--username")
+    parser.add_argument("-p", "--password")
+    # TODO Verify that the configuration is read protected by authorized users only.
+    # TODO Add default config path for windows to.
+    parser.add_argument("-c", "--config", default="/etc/one-solution/config.ini")
+    parser.add_argument("--log", default="DEBUG")
+
+    return parser.parse_args()
+
+
+def setup_logger(loglevel: str):
+    numeric_level = getattr(log, loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {loglevel}")
+    log.basicConfig(level=numeric_level)
+    log.debug("Started logger.")
+
+
+@cache
+def resolve_ip(resolver: str) -> str | None:
+    log.debug(f"Resolving ip using: {resolver}")
+
+    completet_process = run(resolver.split(), capture_output=True)
+
+    if completet_process.returncode == 0:
+        return completet_process.stdout.decode().strip()
+    else:
+        log.warn(
+            "Could not resolve ip. "
+            + "Process exited with non-zero exit code:\n"
+            + f"{completet_process}"
+        )
+        return None
+
+
+def resolve_section_ip(section: SectionProxy) -> str | None:
+    log.info(f"Resolving ip for {section.name}.")
+
+    if "ip" in section and section["ip"]:
+        log.debug(f"{section.name} has ip of %s." % section["ip"])
+        return section["ip"]
+    elif "ip_resolver" in section and section["ip_resolver"]:
+        ip = resolve_ip(section["ip_resolver"])
+        log.debug(f"Resolved ip for {section.name} to {ip}.")
+        return ip
+    else:
+        log.warning(f"{section.name} has no ip nor an ip resolver.")
+        return None
+
+
+def overload_config(config: ConfigParser, args: Namespace):
+    log.info("Overloading config sections with commandline arguments.")
+
+    section = "DEFAULT"
+
+    # Remove all other sections but args.domain.
+    if args["domain"]:
+        section = args["domain"]
+
+        for remove in config.sections():
+            if remove != args["domain"]:
+                log.debug(f"Removing section {remove} from config.")
+                config.remove_section(remove)
+
+    for option, value in args.items():
+        if value:
+            config.set(section, option, value)
+
+
+def resolving_defaults(config: ConfigParser):
+    log.debug(f"Resolving default values for section DEFAULT.")
+
+    config["DEFAULT"]["ip"] = resolve_section_ip(config["DEFAULT"])
+
+
+def setup_config(args: Namespace) -> ConfigParser:
+    log.debug(f"Setting up config from {args.config}.")
+
+    config = ConfigParser()
+    config.read(args.config)
+
+    overload_config(config, vars(args))
+    resolving_defaults(config)
+
+    return config
+
+
+@cache
+def read_last_ip(last_ip_full_path) -> str | None:
+    log.debug(f"Reading last ip in {last_ip_full_path}.")
+
+    if last_ip_full_path:
+        try:
+            with open(last_ip_full_path, "r") as f:
+                last_ip = f.read()
+                log.debug(f"Read last ip of {last_ip}.")
+                return last_ip
+        except (FileNotFoundError, IOError) as e:
+            log.debug(f"Could not read {last_ip_full_path}. {e}.")
+            return None
+
+
+def read_section_last_ip(section: SectionProxy) -> str | None:
+    log.info(f"Resolving last ip for {section.name}.")
+
+    full_path = []
+    last_ip_folder = section["last_ip_folder"]
+    last_ip_file = section["last_ip_file"]
+
+    if last_ip_folder:
+        full_path.append(last_ip_folder)
+
+    if last_ip_file:
+        full_path.append(last_ip_file)
+    else:
+        return None
+
+    return read_last_ip(PurePath(*full_path))
+
+
+def uptodate(section: SectionProxy) -> str | None:
+    log.info(f"Checking if {section.name} has an up to date ip.")
+
+    ip = resolve_section_ip(section)
+    last_ip = read_section_last_ip(section)
+    if ip != last_ip:
+        log.debug(
+            f"{section.name} is not up to date."
+            + f" New ip is {ip}. Old ip is {last_ip}"
+        )
+        return ip
+    else:
+        log.debug(f"{section.name} is up to date with ip {ip}.")
+
+
+class HTMLScavenger(HTMLParser):
+    """
+    Parsers html when XMLParser cant.
+    Creates Element trees of html tags and tosses what cannot be repressented
+    in a normal xml.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        self.root: ET.Element = None
+        self.stack: list[ET.Element] = []
+
+    def handle_starttag(self, tag, attrib):
+        element = ET.Element(tag, dict(attrib))
+
+        if self.stack:
+            self.stack[-1].append(element)
+
+        self.stack.append(element)
+
+    def handle_data(self, text: str):
+        text = text.strip()
+        if not text:
+            return
+
+        try:
+            tail = self.stack[-1]
+            if len(tail) == 0:
+                tail.text = text
+            elif tail.tail == None:
+                tail.tail = text
+            else:
+                log.warn(
+                    f"Multiple tail data detected for element {tail}."
+                    + " Appending to tail."
+                )
+                tail.tail += "\n" + text
+        except:
+            log.warn(
+                "Cannot handle data. No root element has been found:\n" + f"{text}"
+            )
+
+    def handle_comment(self, comment):
+        try:
+            self.stack[-1].append(ET.Comment(comment))
+        except IndexError:
+            log.warn(
+                "Cannot handle comment. No root element has been found:\n"
+                + f"+{comment}"
+            )
+
+    def _find_tag(self, tag) -> int | None:
+        for i in reversed(range(len(self.stack))):
+            element = self.stack[i]
+
+            if isinstance(element, ET.Element) and element.tag == tag:
+                return i
+
+    def handle_endtag(self, tag):
+        i = self._find_tag(tag)
+
+        if i is not None:
+            if len(self.stack) == 1:
+                self.root = self.stack[0]
+
+            del self.stack[i:]
+        else:
+            log.warn(f"Cannot find element with tag {tag}.")
+
+    def tree(self) -> ET.Element:
+        root = self.root
+
+        if not root and self.stack:
+            root = self.stack[1]
+
+        return ET.ElementTree(root)
+
+    def clear(self):
+        self.root = None
+        self.stack = None
+
+
+ADMIN_URL = "https://www.one.com/admin"
+SELECT_ADMIN_DOMAIN_URL = ADMIN_URL + "/select-admin-domain.do?domain={domain}"
+CUSTOM_RECORDS_URL = ADMIN_URL + "/api/domains/{domain}/dns/custom_records"
+DNS_URL = ADMIN_URL + "/api/domains/{domain}/dns/custom_records/{id}"
+
+
+def scrape_login_url(session: Session) -> str:
+    log.info("Scraping logging url.")
+    request = Request("GET", ADMIN_URL)
+    prepared = session.prepare_request(request)
+    response = session.send(prepared)
+
+    log.debug(f"Response: {response.text}")
+
+    if response.status_code != 200:
+        raise RequestException(
+            "Response contains a non 200 OK status code.",
+            request=request,
+            response=response,
+        )
+
+    parser = HTMLScavenger()
+    parser.feed(response.text)
+    tree = parser.tree()
+    element = tree.find(".//form[@id='kc-form-login']")
+    url = element.attrib["action"].replace("&amp;", "&")
+
+    return url
+
+
+def create_login_session(session, login_url, username, password):
+    data = {"username": username, "password": password, "credentialId": ""}
+    request = Request("POST", login_url, data=data)
+    prepared = session.prepare_request(request)
+    response = session.send(prepared)
+
+    if response.status_code != 200:
+        raise RequestException(
+            "Response contains a non 200 OK status code.",
+            request=request,
+            response=response,
+        )
+
+
+@cache
+def login(username, password) -> Session:
+    log.info(f"Creating login session for {username}.")
+
+    session = Session()
+    login_url = scrape_login_url(session)
+    create_login_session(session, login_url, username, password)
+
+    log.debug("Login successful.")
+    return session
+
+
+def select_admin_domain(session: Session, domain):
+    log.info(f"Setting active domain to {domain}.")
+
+    session.get(SELECT_ADMIN_DOMAIN_URL.format(domain=domain))
+
+
+@cache
+def get_custom_records(session: Session, domain):
+    log.info(f"Getting dns records for {domain}.")
+
+    response = session.get(CUSTOM_RECORDS_URL.format(domain=domain))
+    records = response.json()["result"]["data"]
+
+    log.debug(f"Records for {section.name} are {records}.")
+
+    return response.json()["result"]["data"]
+
+
+def find_id_by_subdomain(records, prefix):
+    _domain = prefix if prefix else "head domain"
+
+    log.info(f"Resolving domain-id for {_domain}.")
+
+    for obj in records:
+        if obj["attributes"]["prefix"] == prefix:
+            id = obj["id"]
+            log.debug(f"{_domain} has {id}.")
+            return id
+
+        log.warn(f"Found no record-id for {_domain}.")
+
+
+def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
+    _domain = f"subdomain {prefix}" if prefix else "head domain"
+    log.info(f"Changing ip on {_domain} to new ip: '{ip}'.")
+
+    dns_url = DNS_URL.format(domain=section.name, id=id)
+
+    data = json.dumps(
+        {
+            "type": "dns_service_records",
+            "id": id,
+            "attributes": {
+                "type": "A",
+                "prefix": prefix,
+                "content": ip,
+                "ttl": int(section["ttl"]),
+            },
+        }
+    )
+
+    headers = {"Content-Type": "application/json"}
+
+    request = Request("PATCH", dns_url, data=data, headers=headers)
+    prepared = session.prepare_request(request)
+    response = session.send(prepared)
+
+    if response.status_code != 200:
+        raise RequestException(
+            "Response contains a non 200 OK status code.",
+            request=request,
+            response=response,
+        )
+    else:
+        log.info(f"Changed ip for {_domain}.")
+
+
+def save_last_ip(ip, section: SectionProxy):
+    # TODO
+    pass
+
+
+def update_ip(session: Session, section: SectionProxy, ip):
+    log.info(f"Setting ip {ip} for {section.name}.")
+
+    # For accounts with multiple domains it seems to still be needed
+    # to select which target domain to operate on.
+    select_admin_domain(session, section.name)
+
+    records = get_custom_records(session, section.name)
+
+    if "update_domain" in section and section["update_domain"]:
+        id = find_id_by_subdomain(records, "")
+        if id:
+            patch_a_record(session, section, "", id, ip)
+
+    if "subdomains" in section:
+        for subdomain in section["subdomains"].split(","):
+            subdomain = subdomain.strip()
+
+            if subdomain:
+                id = find_id_by_subdomain(records, subdomain)
+                if id:
+                    patch_a_record(session, section, subdomain, id, ip)
+
+    log.info(f"Finished to update {section.name}.")
+
+
+def update_domain(section: SectionProxy):
+    log.info(f"Updating {section.name}.")
+
+    try:
+        ip = uptodate(section)
+
+        if ip:
+            session = login(section["username"], section["password"])
+            update_ip(session, section, ip)
+            save_last_ip(ip, section)
+        else:
+            log.info(f"{section.name} is synced and has ip %s." % section["ip"])
+            return
+    except RequestException as e:
+        log.error(
+            f"Cannot finish updating {section.name} as an unexpected"
+            + f""" request error occured:
+Request:   
+    method:     {e.request.method}
+    url:        {e.request.url}
+    headers:    {e.request.headers}
+    data:       {e.request.data}
+    params:     {e.request.params}
+
+Response:
+    status:     {e.response.status_code}
+    reason:     {e.response.reason}
+    url:        {e.response.url}
+    headers:    {e.response.headers}
+"""
+        )
+
+    except Exception as e:
+        log.error(
+            f"Cannot finish updating {section.name} as an unexpected"
+            + f" error occured:\n{e}"
+        )
+
+
+if __name__ == "__main__":
+    args = read_arguments()
+    setup_logger(args.log)
+    config = setup_config(args)
+
+    for section in config.sections():
+        section = config[section]
+
+        update_domain(section)
