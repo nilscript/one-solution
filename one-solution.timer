@@ -1,0 +1,9 @@
+[Unit]
+Description=Run one-solution.service periodically every half hour
+
+[Timer]
+OnCalendar=*-*-* *:30:*
+Unit=one-solution.service
+
+[Install]
+WantedBy=multi-user.target

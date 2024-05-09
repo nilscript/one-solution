@@ -1,0 +1,6 @@
+[Unit]
+Description=Keeping your domains under one.com up to date
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/one-solution
