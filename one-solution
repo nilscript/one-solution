@@ -8,7 +8,6 @@ from ipaddress import IPv4Address
 import json
 import logging as log
 from pathlib import PurePath
-import re
 from requests import RequestException, Request, Session
 from subprocess import run
 import xml.etree.ElementTree as ET
