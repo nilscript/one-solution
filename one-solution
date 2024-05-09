@@ -4,9 +4,11 @@ from argparse import ArgumentParser, Namespace
 from configparser import ConfigParser, SectionProxy
 from functools import cache
 from html.parser import HTMLParser
+from ipaddress import IPv4Address
 import json
 import logging as log
 from pathlib import PurePath
+import re
 from requests import RequestException, Request, Session
 from subprocess import run
 import xml.etree.ElementTree as ET
@@ -48,23 +50,23 @@ def setup_logger(loglevel: str):
 
 
 @cache
-def resolve_ip(resolver: str) -> str | None:
+def resolve_ip(resolver: str) -> IPv4Address:
     log.debug(f"Resolving ip using: {resolver}")
 
     completet_process = run(resolver.split(), capture_output=True)
 
-    if completet_process.returncode == 0:
-        return completet_process.stdout.decode().strip()
-    else:
-        log.warn(
+    if completet_process.returncode != 0:
+        raise ChildProcessError(
             "Could not resolve ip. "
-            + "Process exited with non-zero exit code:\n"
-            + f"{completet_process}"
+            + f"""Process exited with non-zero exit code:
+Resolver:   {resolver}
+Process:    {completet_process}"""
         )
-        return None
+
+    return IPv4Address(completet_process.stdout.decode().strip())
 
 
-def resolve_section_ip(section: SectionProxy) -> str | None:
+def resolve_section_ip(section: SectionProxy) -> IPv4Address | None:
     log.info(f"Resolving ip for {section.name}.")
 
     if "ip" in section and section["ip"]:
@@ -101,7 +103,9 @@ def overload_config(config: ConfigParser, args: Namespace):
 def resolving_defaults(config: ConfigParser):
     log.debug(f"Resolving default values for section DEFAULT.")
 
-    config["DEFAULT"]["ip"] = resolve_section_ip(config["DEFAULT"])
+    ip = resolve_section_ip(config["DEFAULT"])
+    if ip:
+        config["DEFAULT"]["ip"] = str(ip)
 
 
 def setup_config(args: Namespace) -> ConfigParser:
@@ -117,7 +121,7 @@ def setup_config(args: Namespace) -> ConfigParser:
 
 
 @cache
-def read_last_ip(last_ip_full_path) -> str | None:
+def read_last_ip(last_ip_full_path) -> IPv4Address | None:
     log.debug(f"Reading last ip in {last_ip_full_path}.")
 
     if last_ip_full_path:
@@ -125,13 +129,13 @@ def read_last_ip(last_ip_full_path) -> str | None:
             with open(last_ip_full_path, "r") as f:
                 last_ip = f.read()
                 log.debug(f"Read last ip of {last_ip}.")
-                return last_ip
+                return IPv4Address(last_ip)
         except (FileNotFoundError, IOError) as e:
             log.debug(f"Could not read {last_ip_full_path}. {e}.")
             return None
 
 
-def read_section_last_ip(section: SectionProxy) -> str | None:
+def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
     log.info(f"Resolving last ip for {section.name}.")
 
     full_path = []
@@ -153,7 +157,11 @@ def uptodate(section: SectionProxy) -> str | None:
     log.info(f"Checking if {section.name} has an up to date ip.")
 
     ip = resolve_section_ip(section)
+    if not ip:
+        raise Exception(f"Ip could not be resolved for {section.name}.")
+
     last_ip = read_section_last_ip(section)
+
     if ip != last_ip:
         log.debug(
             f"{section.name} is not up to date."
