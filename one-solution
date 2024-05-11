@@ -426,7 +426,7 @@ def update_ip(ip, session: Session, section: SectionProxy):
 
     records = get_custom_records(session, section.name)
 
-    if "update_domain" in section and section["update_domain"]:
+    if "update_domain" in section and eval(section["update_domain"]):
         id = find_id_by_subdomain(records, "")
         if id:
             patch_a_record(session, section, "", id, ip)
