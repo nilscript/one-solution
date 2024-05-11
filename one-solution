@@ -168,15 +168,11 @@ def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
     log.debug(f"Resolving last ip for {section.name}.")
 
     full_path = []
-    # TODO Add checks
-    last_ip_folder = section["last_ip_folder"]
-    last_ip_file = section["last_ip_file"]
+    if "last_ip_folder" in section and section["last_ip_folder"]:
+        full_path.append(section["last_ip_folder"])
 
-    if last_ip_folder:
-        full_path.append(last_ip_folder)
-
-    if last_ip_file:
-        full_path.append(last_ip_file)
+    if "last_ip_file" in section and section["last_ip_file"]:
+        full_path.append(section["last_ip_file"])
     else:
         return None
 
@@ -451,7 +447,6 @@ def update_domain(section: SectionProxy):
         else:
             session = login(section["username"], section["password"])
             update_ip(session, section, ip)
-            # TODO Do this at the very last segment.
             save_last_ip(ip, section)
 
     except RequestException as e:
