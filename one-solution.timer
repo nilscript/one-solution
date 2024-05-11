@@ -1,8 +1,8 @@
 [Unit]
-Description=Run one-solution.service periodically every half hour
+Description=Run one-solution.service periodically every hour
 
 [Timer]
-OnCalendar=*-*-* *:30:*
+OnCalendar=*-*-* *:00:*
 Unit=one-solution.service
 
 [Install]
