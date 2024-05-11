@@ -9,6 +9,7 @@ import json
 import logging as log
 import os
 from pathlib import PurePath
+import traceback
 from requests import RequestException, Request, Session
 import stat
 from subprocess import run
@@ -70,7 +71,7 @@ def resolve_section_ip(section: SectionProxy) -> IPv4Address | None:
 
     if "ip" in section and section["ip"]:
         log.debug(f"{section.name} has ip of %s." % section["ip"])
-        return section["ip"]
+        return IPv4Address(section["ip"])
     elif "ip_resolver" in section and section["ip_resolver"]:
         ip = resolve_ip(section["ip_resolver"])
         log.debug(f"Resolved ip for {section.name} to {ip}.")
@@ -188,15 +189,15 @@ def uptodate(section: SectionProxy) -> str | None:
 
     last_ip = read_section_last_ip(section)
 
-    if ip != last_ip:
+    if ip == last_ip:
+        log.debug(f"{section.name} is up to date with ip {ip}.")
+    else:
         log.debug(
             f"{section.name} is not up to date."
             + f" New ip is '{ip}'."
-            + (f"Old ip is {last_ip}" if last_ip else "")
+            + (f" Old ip is '{last_ip}'." if last_ip else "")
         )
         return ip
-    else:
-        log.debug(f"{section.name} is up to date with ip {ip}.")
 
 
 class HTMLScavenger(HTMLParser):
@@ -345,14 +346,13 @@ def select_admin_domain(session: Session, domain):
 
 
 @cache
-def get_custom_records(session: Session, domain):
+def get_custom_records(session: Session, domain: str):
     log.info(f"Getting dns records for {domain}.")
 
     response = session.get(CUSTOM_RECORDS_URL.format(domain=domain))
     records = response.json()["result"]["data"]
 
-    log.debug(f"Records for {section.name} are {records}.")
-
+    log.debug(f"Records for {domain} are {records}.")
     return response.json()["result"]["data"]
 
 
@@ -403,12 +403,21 @@ def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
         )
 
 
-def save_last_ip(ip, section: SectionProxy):
-    # TODO
-    pass
+def save_last_ip(ip, path: PurePath):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(ip)
 
 
-def update_ip(session: Session, section: SectionProxy, ip):
+def saving_section_last_ip(ip, section: SectionProxy):
+    path = get_section_path(section, ["last_ip_folder", "last_ip_file"])
+
+    if path:
+        log.info(f"Saving last ip of {ip} for {section.name}.")
+        save_last_ip(ip, path)
+
+
+def update_ip(ip, session: Session, section: SectionProxy):
     log.info(f"Setting ip {ip} for {section.name}.")
 
     # For accounts with multiple domains it seems to still be needed
@@ -447,13 +456,15 @@ def update_domain(section: SectionProxy):
             log.info(f"Dry flag detected. Will not update {section.name}.")
         else:
             session = login(section["username"], section["password"])
-            update_ip(session, section, ip)
-            save_last_ip(ip, section)
+            update_ip(ip, session, section)
+            saving_section_last_ip(ip, section)
 
     except RequestException as e:
         log.error(
             f"Cannot finish updating {section.name} as an unexpected"
-            + f""" request error occured:
+            + f" request error occured:\n"
+            + traceback.format_exc()
+            + f"""\n
 Request:   
     method:     {e.request.method}
     url:        {e.request.url}
@@ -472,7 +483,8 @@ Response:
     except Exception as e:
         log.error(
             f"Cannot finish updating {section.name} as an unexpected"
-            + f" error occured:\n{e}"
+            + f" error occured:\n"
+            + traceback.format_exc()
         )
 
 
@@ -485,6 +497,4 @@ if __name__ == "__main__":
         log.warning("Needs atleast one domain to work on. Nothing to do.")
 
     for section in config.sections():
-        section = config[section]
-
-        update_domain(section)
+        update_domain(config[section])
