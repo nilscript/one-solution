@@ -7,8 +7,10 @@ from html.parser import HTMLParser
 from ipaddress import IPv4Address
 import json
 import logging as log
+import os
 from pathlib import PurePath
 from requests import RequestException, Request, Session
+import stat
 from subprocess import run
 import xml.etree.ElementTree as ET
 
@@ -33,10 +35,9 @@ def read_arguments() -> Namespace:
     parser.add_argument("-u", "--username")
     parser.add_argument("-p", "--password")
     # TODO Verify that the configuration is read protected by authorized users only.
-    # TODO --Add-default-config-path-for-windows-to.--
-    # TODO Just remove default argument instead.
-    parser.add_argument("-c", "--config", default="/etc/one-solution/config.ini")
-    parser.add_argument("--log", default="DEBUG")
+    parser.add_argument("-c", "--config")
+    parser.add_argument("--log", default="INFO")
+    parser.add_argument("--dry-run", action="store_true")
 
     return parser.parse_args()
 
@@ -67,7 +68,7 @@ Process:    {completet_process}"""
 
 
 def resolve_section_ip(section: SectionProxy) -> IPv4Address | None:
-    log.info(f"Resolving ip for {section.name}.")
+    log.debug(f"Resolving ip for {section.name}.")
 
     if "ip" in section and section["ip"]:
         log.debug(f"{section.name} has ip of %s." % section["ip"])
@@ -82,7 +83,7 @@ def resolve_section_ip(section: SectionProxy) -> IPv4Address | None:
 
 
 def overload_config(config: ConfigParser, args: Namespace):
-    log.info("Overloading config sections with commandline arguments.")
+    log.debug("Overloading config sections with commandline arguments.")
 
     section = "DEFAULT"
 
@@ -96,8 +97,7 @@ def overload_config(config: ConfigParser, args: Namespace):
                 config.remove_section(remove)
 
     for option, value in args.items():
-        if value:
-            config.set(section, option, value)
+        config.set(section, option, str(value))
 
 
 def resolving_defaults(config: ConfigParser):
@@ -108,11 +108,42 @@ def resolving_defaults(config: ConfigParser):
         config["DEFAULT"]["ip"] = str(ip)
 
 
+def path_has_mode(path_mode, mode):
+    return path_mode & 0o777 == mode
+
+
+def read_config_file(config: ConfigParser, path):
+    log.debug(f"Reading config from {path}.")
+
+    path_stat = os.stat(path)
+
+    path_st_mode = path_stat.st_mode
+    path_imode = stat.S_IMODE(path_st_mode)
+    uniq_rwmode = stat.S_IRUSR | stat.S_IWUSR
+
+    if not stat.S_ISREG(path_st_mode):
+        raise RuntimeError(f"{path} is not a regular file.")
+
+    if path_imode  != uniq_rwmode:
+        raise PermissionError(
+            f"{path} must be read write protected"
+            + " so that only the owner may be able to read and write to it."
+            + f" Make sure it has mode: {uniq_rwmode:o}."
+            + f" Current mode: {path_imode:o}"
+        )
+
+    if path_stat.st_uid != os.getuid():
+        raise PermissionError(f"Current user has no access to {path}.")
+
+    config.read(args.config)
+
+
 def setup_config(args: Namespace) -> ConfigParser:
-    log.debug(f"Setting up config from {args.config}.")
+    log.debug(f"Setting up configuration.")
 
     config = ConfigParser()
-    config.read(args.config)
+    if args.config:
+        read_config_file(config, args.config)
 
     overload_config(config, vars(args))
     resolving_defaults(config)
@@ -135,8 +166,9 @@ def read_last_ip(last_ip_full_path) -> IPv4Address | None:
             return None
 
 
+# TODO Cache operation with only last_ip_folder + last_ip_file
 def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
-    log.info(f"Resolving last ip for {section.name}.")
+    log.debug(f"Resolving last ip for {section.name}.")
 
     full_path = []
     # TODO Add checks
@@ -212,7 +244,7 @@ class HTMLScavenger(HTMLParser):
                 )
                 tail.tail += "\n" + text
         except:
-            log.warn(
+            log.warning(
                 "Cannot handle data. No root element has been found:\n" + f"{text}"
             )
 
@@ -220,7 +252,7 @@ class HTMLScavenger(HTMLParser):
         try:
             self.stack[-1].append(ET.Comment(comment))
         except IndexError:
-            log.warn(
+            log.warning(
                 "Cannot handle comment. No root element has been found:\n"
                 + f"+{comment}"
             )
@@ -241,7 +273,7 @@ class HTMLScavenger(HTMLParser):
 
             del self.stack[i:]
         else:
-            log.warn(f"Cannot find element with tag {tag}.")
+            log.warning(f"Cannot find element with tag {tag}.")
 
     def tree(self) -> ET.Element:
         root = self.root
@@ -263,7 +295,7 @@ DNS_URL = ADMIN_URL + "/api/domains/{domain}/dns/custom_records/{id}"
 
 
 def scrape_login_url(session: Session) -> str:
-    log.info("Scraping logging url.")
+    log.debug("Scraping logging url.")
     request = Request("GET", ADMIN_URL)
     prepared = session.prepare_request(request)
     response = session.send(prepared)
@@ -375,8 +407,6 @@ def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
             request=request,
             response=response,
         )
-    else:
-        log.info(f"Changed ip for {_domain}.")
 
 
 def save_last_ip(ip, section: SectionProxy):
@@ -407,7 +437,7 @@ def update_ip(session: Session, section: SectionProxy, ip):
                 if id:
                     patch_a_record(session, section, subdomain, id, ip)
 
-    log.info(f"Finished to update {section.name}.")
+    log.info(f"Finished updating {section.name}.")
 
 
 def update_domain(section: SectionProxy):
@@ -416,13 +446,17 @@ def update_domain(section: SectionProxy):
     try:
         ip = uptodate(section)
 
-        if ip:
-            session = login(section["username"], section["password"])
-            update_ip(session, section, ip)
-            save_last_ip(ip, section)
-        else:
+        if not ip:
             log.info(f"{section.name} is synced and has ip %s." % section["ip"])
             return
+        elif "dry_run" in section:
+            log.info(f"Dry flag detected. Will not update {section.name}.")
+        else:
+            session = login(section["username"], section["password"])
+            update_ip(session, section, ip)
+            # TODO Do this at the very last segment.
+            save_last_ip(ip, section)
+
     except RequestException as e:
         log.error(
             f"Cannot finish updating {section.name} as an unexpected"
@@ -453,6 +487,9 @@ if __name__ == "__main__":
     args = read_arguments()
     setup_logger(args.log)
     config = setup_config(args)
+
+    if not config.sections():
+        log.warning("Needs atleast one domain to work on. Nothing to do.")
 
     for section in config.sections():
         section = config[section]

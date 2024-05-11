@@ -3,4 +3,4 @@ Description=Keeping your domains under one.com up to date
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/one-solution
+ExecStart=/usr/local/bin/one-solution --config /etc/one-solution/config.ini
