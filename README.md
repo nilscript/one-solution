@@ -1,5 +1,5 @@
 # one-solution
-A program for keeping one.com A DNS records up to date at one.com
+A program for keeping one.com A DNS records up to date.
 
 ## Required Packages
 * [Python 3](https://www.python.org/) (Tested with Python 3.11.2)
