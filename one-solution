@@ -153,33 +153,33 @@ def setup_config(args: Namespace) -> ConfigParser:
 def read_last_ip(last_ip_full_path) -> IPv4Address | None:
     log.debug(f"Reading last ip in {last_ip_full_path}.")
 
-    if last_ip_full_path:
-        try:
-            with open(last_ip_full_path, "r") as f:
-                last_ip = f.read()
-                log.debug(f"Read last ip of {last_ip}.")
-                return IPv4Address(last_ip)
-        except (FileNotFoundError, IOError) as e:
-            log.debug(f"Could not read {last_ip_full_path}. {e}.")
-            return None
+    try:
+        with open(last_ip_full_path, "r") as f:
+            last_ip = f.read()
+            log.debug(f"Read last ip of {last_ip}.")
+            return IPv4Address(last_ip)
+    except (FileNotFoundError, IOError) as e:
+        log.debug(f"Could not read {last_ip_full_path}. {e}.")
+        return None
+
+
+def get_section_path(section: SectionProxy, parts: list) -> PurePath | None:
+    path = [section[p] for p in parts if p in section and section[p]]
+    return PurePath(*path) if path else None
 
 
 def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
     log.debug(f"Resolving last ip for {section.name}.")
 
-    full_path = []
-    if "last_ip_folder" in section and section["last_ip_folder"]:
-        full_path.append(section["last_ip_folder"])
-
-    if "last_ip_file" in section and section["last_ip_file"]:
-        full_path.append(section["last_ip_file"])
+    path = get_section_path(section, ["last_ip_folder", "last_ip_file"])
+    if path:
+        return read_last_ip(path)
     else:
-        return None
-
-    return read_last_ip(PurePath(*full_path))
+        log.debug(f"Could not resolve last ip for {section.name}.")
 
 
 def uptodate(section: SectionProxy) -> str | None:
+    """Returns a new ip if section is not up to date."""
     log.info(f"Checking if {section.name} has an up to date ip.")
 
     ip = resolve_section_ip(section)
@@ -191,7 +191,8 @@ def uptodate(section: SectionProxy) -> str | None:
     if ip != last_ip:
         log.debug(
             f"{section.name} is not up to date."
-            + f" New ip is {ip}. Old ip is {last_ip}"
+            + f" New ip is '{ip}'."
+            + (f"Old ip is {last_ip}" if last_ip else "")
         )
         return ip
     else:
