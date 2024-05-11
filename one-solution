@@ -23,7 +23,8 @@ def read_arguments() -> Namespace:
         "--domain",
         type=str,
         help="The domain to operate on."
-        + " If set ignore all other sections in the config file except for default.",
+        + " If its all other sections in the configuration files"
+        + " except DEFAULT and the named section will be ignored.",
     )
     parser.add_argument(
         "-s", "--subdomains", help="Example: --subdomains=mydomain1.com,mydomain2.com"
@@ -37,6 +38,7 @@ def read_arguments() -> Namespace:
     parser.add_argument("-c", "--config")
     parser.add_argument("--log", default="INFO")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--version", action="version", version="%(prog)s 1.0.0")
 
     return parser.parse_args()
 
