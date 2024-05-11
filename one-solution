@@ -34,7 +34,6 @@ def read_arguments() -> Namespace:
     parser.add_argument("-f", "--last-ip-folder")
     parser.add_argument("-u", "--username")
     parser.add_argument("-p", "--password")
-    # TODO Verify that the configuration is read protected by authorized users only.
     parser.add_argument("-c", "--config")
     parser.add_argument("--log", default="INFO")
     parser.add_argument("--dry-run", action="store_true")
@@ -124,7 +123,7 @@ def read_config_file(config: ConfigParser, path):
     if not stat.S_ISREG(path_st_mode):
         raise RuntimeError(f"{path} is not a regular file.")
 
-    if path_imode  != uniq_rwmode:
+    if path_imode != uniq_rwmode:
         raise PermissionError(
             f"{path} must be read write protected"
             + " so that only the owner may be able to read and write to it."
