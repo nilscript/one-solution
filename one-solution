@@ -107,10 +107,6 @@ def resolving_defaults(config: ConfigParser):
         config["DEFAULT"]["ip"] = str(ip)
 
 
-def path_has_mode(path_mode, mode):
-    return path_mode & 0o777 == mode
-
-
 def read_config_file(config: ConfigParser, path):
     log.debug(f"Reading config from {path}.")
 
