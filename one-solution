@@ -96,7 +96,8 @@ def overload_config(config: ConfigParser, args: Namespace):
                 config.remove_section(remove)
 
     for option, value in args.items():
-        config.set(section, option, str(value))
+        if value:
+            config.set(section, option, str(value))
 
 
 def resolving_defaults(config: ConfigParser):
