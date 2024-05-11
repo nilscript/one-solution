@@ -4,7 +4,7 @@ from argparse import ArgumentParser, Namespace
 from configparser import ConfigParser, SectionProxy
 from functools import cache
 from html.parser import HTMLParser
-from ipaddress import IPv4Address
+from ipaddress import AddressValueError, IPv4Address
 import json
 import logging as log
 import os
@@ -76,7 +76,7 @@ def resolve_section_ip(section: SectionProxy) -> IPv4Address | None:
         return IPv4Address(section["ip"])
     elif "ip_resolver" in section and section["ip_resolver"]:
         ip = resolve_ip(section["ip_resolver"])
-        log.debug(f"Resolved ip for {section.name} to {ip}.")
+        log.debug(f"Resolved ip for {section.name} to '{ip}'.")
         return ip
     else:
         log.warning(f"{section.name} has no ip nor an ip resolver.")
@@ -161,7 +161,7 @@ def read_last_ip(last_ip_full_path) -> IPv4Address | None:
             last_ip = f.read()
             log.debug(f"Read last ip of {last_ip}.")
             return IPv4Address(last_ip)
-    except (FileNotFoundError, IOError) as e:
+    except (AddressValueError, FileNotFoundError, IOError) as e:
         log.debug(f"Could not read {last_ip_full_path}. {e}.")
         return None
 
@@ -192,7 +192,7 @@ def uptodate(section: SectionProxy) -> str | None:
     last_ip = read_section_last_ip(section)
 
     if ip == last_ip:
-        log.debug(f"{section.name} is up to date with ip {ip}.")
+        log.debug(f"{section.name} is up to date with ip '{ip}'.")
     else:
         log.debug(
             f"{section.name} is not up to date."
@@ -372,7 +372,9 @@ def find_id_by_subdomain(records, prefix):
         log.warn(f"Found no record-id for {_domain}.")
 
 
-def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
+def patch_a_record(
+    session: Session, section: SectionProxy, prefix, id, ip: IPv4Address
+):
     _domain = f"subdomain {prefix}" if prefix else "head domain"
     log.info(f"Changing ip on {_domain} to new ip: '{ip}'.")
 
@@ -385,7 +387,7 @@ def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
             "attributes": {
                 "type": "A",
                 "prefix": prefix,
-                "content": ip,
+                "content": str(ip),
                 "ttl": int(section["ttl"]),
             },
         }
@@ -405,22 +407,22 @@ def patch_a_record(session: Session, section: SectionProxy, prefix, id, ip):
         )
 
 
-def save_last_ip(ip, path: PurePath):
+def save_last_ip(ip: IPv4Address, path: PurePath):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
-        f.write(ip)
+        f.write(str(ip))
 
 
 def saving_section_last_ip(ip, section: SectionProxy):
     path = get_section_path(section, ["last_ip_folder", "last_ip_file"])
 
     if path:
-        log.info(f"Saving last ip of {ip} for {section.name}.")
+        log.info(f"Saving last ip of '{ip}' for {section.name}.")
         save_last_ip(ip, path)
 
 
 def update_ip(ip, session: Session, section: SectionProxy):
-    log.info(f"Setting ip {ip} for {section.name}.")
+    log.info(f"Setting ip '{ip}' for {section.name}.")
 
     # For accounts with multiple domains it seems to still be needed
     # to select which target domain to operate on.
@@ -452,7 +454,7 @@ def update_domain(section: SectionProxy):
         ip = uptodate(section)
 
         if not ip:
-            log.info(f"{section.name} is synced and has ip %s." % section["ip"])
+            log.info(f"{section.name} is up to date.")
             return
         elif "dry_run" in section:
             log.info(f"Dry flag detected. Will not update {section.name}.")
