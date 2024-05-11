@@ -162,7 +162,6 @@ def read_last_ip(last_ip_full_path) -> IPv4Address | None:
             return None
 
 
-# TODO Cache operation with only last_ip_folder + last_ip_file
 def read_section_last_ip(section: SectionProxy) -> IPv4Address | None:
     log.debug(f"Resolving last ip for {section.name}.")
 
