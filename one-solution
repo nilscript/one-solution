@@ -20,7 +20,6 @@ def read_arguments() -> Namespace:
     parser.add_argument(
         "-d",
         "--domain",
-        nargs=1,
         type=str,
         help="The domain to operate on."
         + " If set ignore all other sections in the config file except for default.",
@@ -94,6 +93,9 @@ def overload_config(config: ConfigParser, args: Namespace):
             if remove != args["domain"]:
                 log.debug(f"Removing section {remove} from config.")
                 config.remove_section(remove)
+
+    if section != "DEFAULT" and section not in config.sections():
+        config.add_section(section)
 
     for option, value in args.items():
         if value:
